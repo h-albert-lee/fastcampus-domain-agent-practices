@@ -25,11 +25,36 @@ def markdown(text: str) -> dict:
     }
 
 
+def remove_stale_widget_metadata(notebook: dict) -> bool:
+    """정적 렌더링을 깨뜨리는 저장된 ipywidgets 상태를 제거한다."""
+    changed = notebook.setdefault("metadata", {}).pop("widgets", None) is not None
+    widget_mime_types = {
+        "application/vnd.jupyter.widget-state+json",
+        "application/vnd.jupyter.widget-view+json",
+    }
+    for cell in notebook.get("cells", []):
+        if cell.get("cell_type") != "code":
+            continue
+        cleaned_outputs = []
+        for output in cell.get("outputs", []):
+            data = output.get("data")
+            if isinstance(data, dict):
+                for mime_type in widget_mime_types:
+                    if mime_type in data:
+                        del data[mime_type]
+                        changed = True
+                if not data and output.get("output_type") in {"display_data", "execute_result"}:
+                    continue
+            cleaned_outputs.append(output)
+        cell["outputs"] = cleaned_outputs
+    return changed
+
+
 def enrich(filename: str, before: dict[int, list[str]], after: dict[int, list[str]], replacements=None) -> None:
     path = ROOT / filename
     notebook = json.loads(path.read_text(encoding="utf-8"))
+    changed = remove_stale_widget_metadata(notebook)
     if any(MARKER in "".join(cell.get("source", [])) for cell in notebook["cells"]):
-        changed = False
         if notebook.get("nbformat_minor", 0) >= 5:
             for cell in notebook["cells"]:
                 source = "".join(cell.get("source", []))
@@ -38,7 +63,9 @@ def enrich(filename: str, before: dict[int, list[str]], after: dict[int, list[st
                     changed = True
         if changed:
             path.write_text(json.dumps(notebook, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-        print(f"skip: {filename}")
+            print(f"sanitized: {filename}")
+        else:
+            print(f"skip: {filename}")
         return
 
     replacements = replacements or {}
@@ -51,6 +78,7 @@ def enrich(filename: str, before: dict[int, list[str]], after: dict[int, list[st
         for cell in cells:
             cell.pop("id", None)
     notebook["cells"] = cells
+    remove_stale_widget_metadata(notebook)
     path.write_text(json.dumps(notebook, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(f"updated: {filename} ({len(cells)} cells)")
 
